@@ -34,13 +34,13 @@ class TestHypervOVS(manager.NetworkScenarioTest):
         # Credentials for images
         self.win_user = CONF.hyperv.win_user
         self.win_pass = CONF.hyperv.win_pass
-        self.image_ssh_user = CONF.compute.image_ssh_user
-        self.image_alt_ssh_user = CONF.compute.image_alt_ssh_user
+        self.image_ssh_user = CONF.hyperv.image_ssh_user
+        self.image_alt_ssh_user = CONF.hyperv.image_alt_ssh_user
         # Images used for test
-        self.image_ref = CONF.compute.image_ref
-        self.image_ref_alt = CONF.compute.image_ref_alt
-        self.flavor = CONF.compute.flavor_ref
-        self.timeout = CONF.compute.ssh_timeout
+        self.image_ref = CONF.hyperv.image_hyperv_ref
+        self.image_ref_alt = CONF.hyperv.image_hyperv_ref_alt
+        self.flavor = CONF.hyperv.flavor_hyperv_ref
+        self.timeout = CONF.hyperv.ssh_timeout
         # Size or time testing
         self.size_to_test = CONF.hyperv.size_test
         self.time_to_test = CONF.hyperv.time_test
@@ -127,8 +127,13 @@ class TestHypervOVS(manager.NetworkScenarioTest):
         return self.create_server(
             image=image, flavor=flavor, create_kwargs=create_kwargs)
 
-    def boot_two_instances(self, img_1, img_2, diff_host):
+    def boot_two_instances_with_floatingips(self, img_1, img_2, diff_host):
+        os_1 = self._get_image_property(img_1, 'os_distro')
+        os_2 = self._get_image_property(img_2, 'os_distro')
+
         self.instance_1 = self.boot_instance(image=img_1, flavor=self.flavor)
+        self.floatingip_1 = self.add_floating_ip(self.instance_1)
+        self.wait_active(self.floatingip_1, os=os_1)
 
         hyper_type_1 = self._get_image_property(img_1, 'hypervisor_type')
         hyper_type_2 = self._get_image_property(img_2, 'hypervisor_type')
@@ -142,6 +147,8 @@ class TestHypervOVS(manager.NetworkScenarioTest):
 
         self.instance_2 = self.boot_instance(
             image=img_2, flavor=self.flavor, availability_zone=host)
+        self.floatingip_2 = self.add_floating_ip(self.instance_2)
+        self.wait_active(self.floatingip_2, os=os_2)
 
     def get_cmd(self, ip, tcp):
         """Size is preferred over time for test."""
@@ -202,9 +209,19 @@ class TestHypervOVS(manager.NetworkScenarioTest):
             self.send_ssh_iperf3_client(
                 self.get_ssh(ip=host_ip, username=ssh_user), to_ip)
 
-    def wait_active(self, ip_to_wait):
+    def wait_active(self, ip_to_wait, os=None):
+        # NOTE(abalutoiu): Windows will have to restart after cloudbase-init
+        # finishes setting the hostname, so the test should wait for the VM
+        # to reboot. Since the VM status doesn't when is rebooting, ping is
+        # used to detect when the VM finishes rebooting.
         try:
-            self.assertTrue(self.ping_ip_address(ip_address=ip_to_wait))
+            if os != 'windows':
+                self.assertTrue(self.ping_ip_address(ip_address=ip_to_wait))
+            else:
+                self.assertTrue(self.ping_ip_address(ip_address=ip_to_wait))
+                self.assertTrue(self.ping_ip_address(ip_address=ip_to_wait,
+                                                     should_succeed=False))
+                self.assertTrue(self.ping_ip_address(ip_address=ip_to_wait))
         except Exception:
             raise Exception('Timed out waiting for %(ip)s to become reachable'
                             % {'ip': ip_to_wait})
@@ -231,6 +248,12 @@ class TestHypervOVS(manager.NetworkScenarioTest):
         LOG.info('UDP test results: %s' % self.udp_result)
 
     def prepare_client_linux(self, client):
+        try:
+            client.exec_command('which iperf3')
+            return  # return if command has exit code 0 (iperf3 installed)
+        except Exception:
+            pass  # exit code 1 (iperf3 uninstalled)
+
         try:  # exit code 127 if apt-get not found and exception is raised
             client.exec_command('apt-get')
             apt_get = True  # no exception raised, using apt-get
@@ -265,12 +288,29 @@ class TestHypervOVS(manager.NetworkScenarioTest):
     def prepare_client_windows(self, ip):
         client = winrm_client.WinrmClient(
             ip, self.win_user, self.win_pass, timeout=self.timeout)
+
+        try:
+            client.run_powershell('Get-Command iperf3')
+            return  # if iperf3 is installed, the command will succeed
+        except:
+            pass  # ieprf3 not found, install it
+
+        _retry_count = 0
+        _max_retry_number = 3
         try:
             url = 'http://files.budman.pw/iperf3_10.zip'
             loc = 'C:\iperf3.zip'
             cmd = 'powershell wget %(url)s -OutFile %(loc)s' % {
                 'url': url, 'loc': loc}
-            client.exec_cmd(cmd)
+
+            while True:
+                try:
+                    client.exec_cmd(cmd)
+                    break
+                except Exception:
+                    _retry_count += 1
+                    if _retry_count == _max_retry_number:
+                        raise Exception
 
             target_dir = 'C:\\'
             cmd = ("$shellApplication = new-object -com shell.application\n"
@@ -291,27 +331,22 @@ class TestHypervOVS(manager.NetworkScenarioTest):
 
     def _test_with_images(self, img_1, img_2,
                           ssh_user_1, ssh_user_2, diff_host):
-        self.boot_two_instances(img_1, img_2, diff_host)
-
-        floatingip_1 = self.add_floating_ip(self.instance_1)
-        floatingip_2 = self.add_floating_ip(self.instance_2)
-        self.wait_active(floatingip_1)
-        self.wait_active(floatingip_2)
+        self.boot_two_instances_with_floatingips(img_1, img_2, diff_host)
 
         os_1 = self._get_image_property(img_1, 'os_distro')
         os_2 = self._get_image_property(img_2, 'os_distro')
-        self.prepare_client(floatingip_1, os_1, ssh_user_1)
-        self.prepare_client(floatingip_2, os_2, ssh_user_2)
+        self.prepare_client(self.floatingip_1, os_1, ssh_user_1)
+        self.prepare_client(self.floatingip_2, os_2, ssh_user_2)
 
         # First VM (img_1) is sender - second VM (img_2) is receiver
-        self.send_iperf3_server(floatingip_2, os_2, ssh_user_2)
+        self.send_iperf3_server(self.floatingip_2, os_2, ssh_user_2)
         _, ip4 = self._get_server_port_id_and_ip4(self.instance_2)
-        self.send_iperf3_client(floatingip_1, ip4, os_1, ssh_user_1)
+        self.send_iperf3_client(self.floatingip_1, ip4, os_1, ssh_user_1)
         self.log_results(img_1, img_2, os_1, os_2, diff_host, reverse=True)
         # First VM (img_1) is receiver - second VM (img_2) is sender
-        self.send_iperf3_server(floatingip_1, os_1, ssh_user_1)
+        self.send_iperf3_server(self.floatingip_1, os_1, ssh_user_1)
         _, ip4 = self._get_server_port_id_and_ip4(self.instance_1)
-        self.send_iperf3_client(floatingip_2, ip4, os_2, ssh_user_2)
+        self.send_iperf3_client(self.floatingip_2, ip4, os_2, ssh_user_2)
         self.log_results(img_1, img_2, os_1, os_2, diff_host, reverse=False)
 
     @test.services('compute')
