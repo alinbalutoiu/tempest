@@ -508,3 +508,99 @@ class ServerActionsTestJSON(base.BaseV2ComputeTest):
             self.assertEqual(console_type, body['type'])
             self.assertNotEqual('', body['url'])
             self._validate_url(body['url'])
+
+
+class ServerActionsTestBootFromVolume(ServerActionsTestJSON):
+    def setUp(self):
+        super(ServerActionsTestJSON, self).setUp()
+
+        try:
+            waiters.wait_for_server_status(self.client,
+                                           self.server_id, 'ACTIVE')
+        except lib_exc.NotFound:
+            # The server was deleted by previous test, create a new one
+            server = self.create_test_server(wait_until='ACTIVE',
+                                             **self.kwargs)
+            self.__class__.server_id = server['id']
+        except Exception:
+            # Rebuild server if something happened to it during a test
+            self.__class__.server_id = self.rebuild_server(self.server_id,
+                                                           **self.kwargs)
+
+    @classmethod
+    def resource_setup(cls):
+        cls.set_validation_resources()
+
+        super(ServerActionsTestJSON, cls).resource_setup()
+        # flavor default value is CONF.compute.flavor_ref
+        # image_id is empty in order to boot from volume and not to use the
+        # default value of image_id from CONF
+        cls.bd_map_v2 = [{
+            'uuid': cls.image_ref,
+            'source_type': 'image',
+            'destination_type': 'volume',
+            'delete_on_termination': True,
+            'boot_index': 0,
+            'volume_size': 1
+            }]
+
+        cls.kwargs = {
+            'validatable': True,
+            'block_device_mapping_v2': cls.bd_map_v2,
+            'name': 'server-with-bdm-v2',
+            'image_id': ''
+        }
+        cls.server_id = cls.rebuild_server(server_id=None,
+                                           **cls.kwargs)
+
+    @testtools.skip("Skipped because nova doesn't support rebuild from BDM")
+    def test_rebuild_server(self):
+        pass
+
+    @testtools.skip("Skipped because nova doesn't support rebuild from BDM")
+    def test_rebuild_server_in_stop_state(self):
+        pass
+
+    @testtools.skipUnless(CONF.compute_feature_enabled.console_output,
+                          'Console output not supported.')
+    def test_get_console_output_with_unlimited_size(self):
+        server = self.create_test_server(wait_until='ACTIVE',
+                                         **self.kwargs)
+
+        def _check_full_length_console_log():
+            output = self.client.get_console_output(server['id'],
+                                                    None)['output']
+            self.assertTrue(output, "Console output was empty.")
+            lines = len(output.split('\n'))
+
+            # NOTE: This test tries to get full length console log, and the
+            # length should be bigger than the one of test_get_console_output.
+            self.assertTrue(lines > 10, "Cannot get enough console log length."
+                                        " (lines: %s)" % lines)
+
+        self.wait_for(_check_full_length_console_log)
+
+    @testtools.skipUnless(CONF.compute_feature_enabled.console_output,
+                          'Console output not supported.')
+    def test_get_console_output_server_id_in_shutoff_status(self):
+        # Positive test:Should be able to GET the console output
+        # for a given server_id in SHUTOFF status
+
+        # NOTE: SHUTOFF is irregular status. To avoid test instability,
+        #       one server is created only for this test without using
+        #       the server that was created in setupClass.
+        server = self.create_test_server(wait_until='ACTIVE',
+                                         **self.kwargs)
+        temp_server_id = server['id']
+
+        self.client.stop_server(temp_server_id)
+        waiters.wait_for_server_status(self.client, temp_server_id, 'SHUTOFF')
+        self.wait_for(self._get_output)
+
+    @testtools.skip("Skipped until nova supports BDM backup")
+    def test_create_backup(self):
+        pass
+
+    @testtools.skip("Skipped until nova supports BDM shelve")
+    def test_shelve_unshelve_server(self):
+        pass
