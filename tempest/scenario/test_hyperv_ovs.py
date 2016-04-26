@@ -43,6 +43,7 @@ class TestHypervOVS(manager.NetworkScenarioTest):
         self.timeout = CONF.hyperv.ssh_timeout
         # Size or time testing
         self.size_to_test = CONF.hyperv.size_test
+        self.size_to_test = None
         self.time_to_test = CONF.hyperv.time_test
         # Check if images exist and if they have supported hypervisors and OSs
         self._check_image(self.image_ref)
@@ -158,11 +159,11 @@ class TestHypervOVS(manager.NetworkScenarioTest):
             option = '-n %(size)s' % {'size': self.size_to_test}
 
         if tcp:
-            cmd = 'iperf3 -c %(ip)s -f g -P8 -O5 -i 10 %(option)s' % {
-                'ip': ip, 'option': option}
+            cmd = 'iperf3 -c %(ip)s -f g -N -P8 -O5 -i 60 -t 180' % {
+                'ip': ip}
         else:
-            cmd = 'iperf3 -c %(ip)s -u -f g -b 0 -i 10 %(option)s' % {
-                'ip': ip, 'option': option}
+            cmd = 'iperf3 -c %(ip)s -u -f g -b 0 -i 60 -t 180' % {
+                'ip': ip}
 
         return cmd
 
@@ -172,22 +173,26 @@ class TestHypervOVS(manager.NetworkScenarioTest):
     def send_winrm_iperf3_server(self, ip):
         client = winrm_client.WinrmClient(
             ip, self.win_user, self.win_pass, timeout=self.timeout)
-        client.exec_cmd('C:\iperf3 -s -d', check_output=False)
+        client.run_powershell("Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False")
+        client.exec_cmd('C:\\Users\\Administrator\\Downloads\\iperf-3.1.2-win64\\iperf3 -s -d', check_output=False)
 
     def send_winrm_iperf3_client(self, host_ip, to_ip):
         client = winrm_client.WinrmClient(
             host_ip, self.win_user, self.win_pass, timeout=self.timeout)
+        client.run_powershell("Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False")
         try:
-            self.tcp_result = client.exec_cmd(
-                'C:\%(cmd)s' % {'cmd': self.get_cmd(to_ip, tcp=True)})
-            self.udp_result = client.exec_cmd(
-                'C:\%(cmd)s' % {'cmd': self.get_cmd(to_ip, tcp=False)})
+            cmd = 'C:\\Users\\Administrator\\Downloads\\iperf-3.1.2-win64\\%(cmd)s' % {'cmd': self.get_cmd(to_ip, tcp=True)}
+            LOG.error(cmd)
+            self.tcp_result = client.exec_cmd(cmd)
+            cmd = 'C:\\Users\\Administrator\\Downloads\\iperf-3.1.2-win64\\%(cmd)s' % {'cmd': self.get_cmd(to_ip, tcp=False)}
+            LOG.error(cmd)
+            # self.udp_result = client.exec_cmd(cmd)
+            self.udp_result = None
 
             self.tcp_result = self.tcp_result.std_out
-            self.udp_result = self.udp_result.std_out
+            # self.udp_result = self.udp_result.std_out
         except Exception:
-            raise Exception(
-                'iperf3 could not be executed correctly on windows')
+            raise
 
     def send_ssh_iperf3_server(self, client):
         client.exec_command('screen -d -m iperf3 -s')
@@ -234,18 +239,18 @@ class TestHypervOVS(manager.NetworkScenarioTest):
             text = 'on the same host'
         else:
             text = 'on different hosts'
-        LOG.info('Results for VMs %s' % text)
-        LOG.info('First VM (%s) - Second VM (%s)' % (os_1, os_2))
+        LOG.error('Results for VMs %s' % text)
+        LOG.error('First VM (%s) - Second VM (%s)' % (os_1, os_2))
 
         result = 'Results for %s - %s ' % (type_1, type_2)
         if not reverse:
             result = result + '(receiver - sender)'
         else:
             result = result + '(sender - receiver)'
-        LOG.info(result)
+        LOG.error(result)
 
-        LOG.info('TCP test results: %s' % self.tcp_result)
-        LOG.info('UDP test results: %s' % self.udp_result)
+        LOG.error('TCP test results: %s' % self.tcp_result)
+        LOG.error('UDP test results: %s' % self.udp_result)
 
     def prepare_client_linux(self, client):
         try:
@@ -321,6 +326,7 @@ class TestHypervOVS(manager.NetworkScenarioTest):
                    % {'loc': loc, 'target_dir': target_dir})
             client.run_powershell(cmd)
         except Exception:
+            raise
             raise Exception('Could not install iperf3 for windows')
 
     def prepare_client(self, ip, os, ssh_user):
@@ -335,8 +341,8 @@ class TestHypervOVS(manager.NetworkScenarioTest):
 
         os_1 = self._get_image_property(img_1, 'os_distro')
         os_2 = self._get_image_property(img_2, 'os_distro')
-        self.prepare_client(self.floatingip_1, os_1, ssh_user_1)
-        self.prepare_client(self.floatingip_2, os_2, ssh_user_2)
+        # self.prepare_client(self.floatingip_1, os_1, ssh_user_1)
+        # self.prepare_client(self.floatingip_2, os_2, ssh_user_2)
 
         # First VM (img_1) is sender - second VM (img_2) is receiver
         self.send_iperf3_server(self.floatingip_2, os_2, ssh_user_2)

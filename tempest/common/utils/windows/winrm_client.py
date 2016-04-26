@@ -15,7 +15,7 @@ class WinrmClient(object):
         _url = self._get_url(server_ip)
         self._conn = winrm.protocol.Protocol(
             endpoint=_url, username=username, password=password)
-        self._conn.set_timeout(timeout)
+        self._conn.set_timeout(int(timeout))
 
     def exec_cmd(self, command, args=(), check_output=True):
         shell_id = self._conn.open_shell()
@@ -24,7 +24,7 @@ class WinrmClient(object):
             rs = winrm.Response(
                 self._conn.get_command_output(shell_id, command_id))
             if rs.status_code != 0:
-                raise Exception
+                raise Exception("%s %s %s" % (rs.status_code, rs.std_err, rs.std_out))
             else:
                 return rs
         return None
@@ -34,6 +34,6 @@ class WinrmClient(object):
         return self.exec_cmd(cmd)
 
     def _get_url(self, ip):
-        return self._URL_TEMPLATE % {'protocol': 'http',
+        return self._URL_TEMPLATE % {'protocol': 'https',
                                      'ip': ip,
-                                     'port': 5985}
+                                     'port': 5986}
